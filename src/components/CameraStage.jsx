@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { MODEL_INPUT_SIZE, createSession, detectObjects, resizeOverlay } from '../lib/yolo';
 
-const MODEL_URL = 'public/models/yolov8n.onnx';
+const MODEL_URL = 'models/yolov8n.onnx';
 const CONFIDENCE_THRESHOLD = 0.35;
 const IOU_THRESHOLD = 0.45;
 const FRAME_INTERVAL_MS = 120;
@@ -390,13 +390,6 @@ export function CameraStage() {
         >
           Webcam
         </button>
-        <button
-          type="button"
-          className={mode === 'upload' ? 'mode-switcher__button mode-switcher__button--active' : 'mode-switcher__button'}
-          onClick={() => handleModeChange('upload')}
-        >
-          Upload picture
-        </button>
         <label className="upload-button" htmlFor="image-upload">
           Choose image
         </label>
@@ -467,14 +460,7 @@ export function CameraStage() {
         </div>
       </div>
 
-      <div className="stage-footer">
-        <p>
-          Browser-side inference keeps your sample images local. Live (unstained) cells are
-          outlined in green; dead (trypan blue stained) cells are outlined in red.
-        </p>
-        <p>Viability % = live cells / total cells. Switch to upload mode to analyze a single photo.</p>
-        {error ? <p className="error-copy">{error}</p> : null}
-      </div>
+      
     </article>
   );
 }
