@@ -5,8 +5,8 @@ function App() {
     <main className="app-shell">
       <section className="hero-panel">
         <div className="hero-copy">
-          <h1>Cell counter using YOLO model</h1>
-          <p className="lede">This website uses on-device inference to count cells using trypan blue staining and a hemocytometer.</p>
+          <h1>Automatic Cell Counter</h1>
+          <p className="lede">This website uses on-device YOLOv8 inference to count cells using trypan blue staining and a hemocytometer.</p>
         </div>
 
         <div className="stage-center">

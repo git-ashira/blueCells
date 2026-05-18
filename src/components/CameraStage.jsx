@@ -1,17 +1,36 @@
 import { useEffect, useRef, useState } from 'react';
 import { MODEL_INPUT_SIZE, createSession, detectObjects, resizeOverlay } from '../lib/yolo';
 
-const MODEL_URL = '/models/yolov8n.onnx';
+const MODEL_URL = 'public/models/yolov8n.onnx';
 const CONFIDENCE_THRESHOLD = 0.35;
 const IOU_THRESHOLD = 0.45;
 const FRAME_INTERVAL_MS = 120;
+
+// Class configuration matching the trained model
+// Class IDs must match training order: 0 = live_cell, 1 = dead_cell
+const CLASS_CONFIG = {
+  0: { label: ' ', color: '#22c55e' },   // green
+  1: { label: ' ', color: '#ef4444' },   // red
+};
+const CLASS_NAMES = ['live_cell', 'dead_cell'];
 
 function formatError(error) {
   if (error instanceof Error) {
     return error.message;
   }
-
   return String(error);
+}
+
+function classifyDetection(detection) {
+  // Prefer numeric classId if provided by the yolo lib
+  if (typeof detection.classId === 'number' && CLASS_CONFIG[detection.classId]) {
+    return detection.classId;
+  }
+  // Fallback: match by label name
+  const label = (detection.label || '').toLowerCase();
+  if (label.includes('live')) return 0;
+  if (label.includes('dead')) return 1;
+  return -1;
 }
 
 export function CameraStage() {
@@ -33,22 +52,23 @@ export function CameraStage() {
   const [uploadedImageUrl, setUploadedImageUrl] = useState('');
   const [imageReady, setImageReady] = useState(false);
   const [inferenceMs, setInferenceMs] = useState(0);
-  const [objectCount, setObjectCount] = useState(0);
   const [liveCount, setLiveCount] = useState(0);
   const [deadCount, setDeadCount] = useState(0);
   const [error, setError] = useState('');
+  const [confidenceThreshold, setConfidenceThreshold] = useState(CONFIDENCE_THRESHOLD);
+
+  const totalCount = liveCount + deadCount;
+  const viability = totalCount > 0 ? (liveCount / totalCount) * 100 : 0;
 
   useEffect(() => {
     let cancelled = false;
 
     async function initializeSession() {
       try {
-        setStatus('Loading YOLOv8 model into WebAssembly runtime...');
+        setStatus('Loading trypan blue cell detection model...');
         const session = await createSession(MODEL_URL);
 
-        if (cancelled) {
-          return;
-        }
+        if (cancelled) return;
 
         sessionRef.current = session;
         setModelReady(true);
@@ -72,9 +92,7 @@ export function CameraStage() {
     let cancelled = false;
 
     async function startCamera() {
-      if (!modelReady || mode !== 'webcam') {
-        return;
-      }
+      if (!modelReady || mode !== 'webcam') return;
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -94,15 +112,13 @@ export function CameraStage() {
         streamRef.current = stream;
         const video = videoRef.current;
 
-        if (!video) {
-          return;
-        }
+        if (!video) return;
 
         video.srcObject = stream;
         await video.play();
         setCameraReady(true);
         setImageReady(false);
-        setStatus('Camera live. Detecting objects in real time.');
+        setStatus('Camera live. Counting cells in real time.');
       } catch (err) {
         if (!cancelled) {
           setError(formatError(err));
@@ -128,22 +144,43 @@ export function CameraStage() {
   }, [modelReady, mode]);
 
   useEffect(() => {
-    if (mode === 'webcam') {
-      return;
-    }
+    if (mode === 'webcam') return;
 
     if (!cameraReady) {
-      setStatus('Upload an image to run detection.');
+      setStatus('Upload an image to count cells.');
     }
   }, [mode, cameraReady]);
+
+  // Helper to apply detection results to UI state and canvas
+  function applyDetections(detections, source) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    resizeOverlay(canvas, source);
+
+    const context = canvas.getContext('2d');
+    if (context) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      drawDetections(context, source, canvas, detections);
+    }
+
+    let live = 0;
+    let dead = 0;
+    for (const det of detections) {
+      const cls = classifyDetection(det);
+      if (cls === 0) live += 1;
+      else if (cls === 1) dead += 1;
+    }
+
+    setLiveCount(live);
+    setDeadCount(dead);
+  }
 
   useEffect(() => {
     let cancelled = false;
 
     async function loop(now) {
-      if (cancelled) {
-        return;
-      }
+      if (cancelled) return;
 
       const video = videoRef.current;
       const image = imageRef.current;
@@ -168,33 +205,19 @@ export function CameraStage() {
         try {
           const start = performance.now();
           const detections = await detectObjects(session, source, inputCanvas, {
-            confidenceThreshold: CONFIDENCE_THRESHOLD,
+            confidenceThreshold: confidenceThreshold,
             iouThreshold: IOU_THRESHOLD,
             modelInputSize: MODEL_INPUT_SIZE,
           });
 
-          if (cancelled) {
-            return;
-          }
+          if (cancelled) return;
 
-          resizeOverlay(canvas, source);
-
-          const context = canvas.getContext('2d');
-          if (context) {
-            context.clearRect(0, 0, canvas.width, canvas.height);
-            drawDetections(context, source, canvas, detections);
-          }
+          applyDetections(detections, source);
 
           const elapsed = performance.now() - start;
           setInferenceMs(elapsed);
-          setObjectCount(detections.length);
-          // categorize as live/dead based on label heuristics
-          const lcount = detections.filter((d) => /live|viable|alive|unstained|unstained cell/i.test(d.label)).length;
-          const dcount = detections.filter((d) => /dead|nonviable|trypan|stained|blue|stained cell/i.test(d.label)).length;
-          setLiveCount(lcount);
-          setDeadCount(dcount);
           setStatus(
-            `${mode === 'webcam' ? 'Camera live' : 'Image analyzed'}. ${detections.length} object${detections.length === 1 ? '' : 's'} detected.`,
+            `${mode === 'webcam' ? 'Camera live' : 'Image analyzed'}. ${detections.length} cell${detections.length === 1 ? '' : 's'} detected.`,
           );
           lastInferenceRef.current = now;
         } catch (err) {
@@ -220,7 +243,7 @@ export function CameraStage() {
         cancelAnimationFrame(rafRef.current);
       }
     };
-  }, [cameraReady, imageReady, mode]);
+  }, [cameraReady, imageReady, mode, confidenceThreshold]);
 
   useEffect(() => {
     return () => {
@@ -244,36 +267,21 @@ export function CameraStage() {
         const source = imageRef.current;
         const session = sessionRef.current;
 
-        if (!canvas || !inputCanvas || !source || !session) {
-          return;
-        }
+        if (!canvas || !inputCanvas || !source || !session) return;
 
         const start = performance.now();
         const detections = await detectObjects(session, source, inputCanvas, {
-          confidenceThreshold: CONFIDENCE_THRESHOLD,
+          confidenceThreshold: confidenceThreshold,
           iouThreshold: IOU_THRESHOLD,
           modelInputSize: MODEL_INPUT_SIZE,
         });
 
-        if (cancelled) {
-          return;
-        }
+        if (cancelled) return;
 
-        resizeOverlay(canvas, source);
-
-        const context = canvas.getContext('2d');
-        if (context) {
-          context.clearRect(0, 0, canvas.width, canvas.height);
-          drawDetections(context, source, canvas, detections);
-        }
+        applyDetections(detections, source);
 
         setInferenceMs(performance.now() - start);
-        setObjectCount(detections.length);
-        const lcount = detections.filter((d) => /live|viable|alive|unstained|unstained cell/i.test(d.label)).length;
-        const dcount = detections.filter((d) => /dead|nonviable|trypan|stained|blue|stained cell/i.test(d.label)).length;
-        setLiveCount(lcount);
-        setDeadCount(dcount);
-        setStatus(`Image analyzed. ${detections.length} object${detections.length === 1 ? '' : 's'} detected.`);
+        setStatus(`Image analyzed. ${detections.length} cell${detections.length === 1 ? '' : 's'} detected.`);
       } catch (err) {
         if (!cancelled) {
           setError(formatError(err));
@@ -287,7 +295,7 @@ export function CameraStage() {
     return () => {
       cancelled = true;
     };
-  }, [imageReady, mode]);
+  }, [imageReady, mode, confidenceThreshold]);
 
   function stopCameraStream() {
     const stream = streamRef.current;
@@ -312,13 +320,14 @@ export function CameraStage() {
     if (canvas && context) {
       context.clearRect(0, 0, canvas.width, canvas.height);
     }
-    setObjectCount(0);
+    setLiveCount(0);
+    setDeadCount(0);
   }
 
   function handleModeChange(nextMode) {
     setError('');
     setMode(nextMode);
-    setStatus(nextMode === 'webcam' ? 'Loading webcam stream...' : 'Upload an image to run detection.');
+    setStatus(nextMode === 'webcam' ? 'Loading webcam stream...' : 'Upload an image to count cells.');
     setImageReady(false);
     resetOverlay();
 
@@ -338,9 +347,7 @@ export function CameraStage() {
 
   function handleFileSelect(event) {
     const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
+    if (!file) return;
 
     if (uploadedUrlRef.current) {
       URL.revokeObjectURL(uploadedUrlRef.current);
@@ -351,17 +358,17 @@ export function CameraStage() {
     setError('');
     setUploadedImageUrl(objectUrl);
     setMode('upload');
-    setStatus(`Loaded ${file.name}. Running detection...`);
+    setStatus(`Loaded ${file.name}. Counting cells...`);
     setImageReady(false);
     stopCameraStream();
     resetOverlay();
   }
 
+
+
   function handleImageLoad(event) {
     const image = event.currentTarget;
-    if (mode !== 'upload' || !image.src) {
-      return;
-    }
+    if (mode !== 'upload' || !image.src) return;
 
     setImageReady(true);
   }
@@ -372,7 +379,7 @@ export function CameraStage() {
         <span className={`status-pill ${modelReady && (cameraReady || imageReady) ? 'status-pill--ready' : ''}`}>
           {status}
         </span>
-        <span className="status-meta">ONNX Runtime Web · WASM · YOLOv8n</span>
+        <span className="status-meta">Trypan Blue Cell Counter · ONNX Runtime Web · YOLOv8</span>
       </div>
 
       <div className="mode-switcher" role="tablist" aria-label="Input source">
@@ -402,6 +409,22 @@ export function CameraStage() {
         />
       </div>
 
+      <div className="confidence-control">
+        <label htmlFor="confidence-slider">
+          Confidence Threshold: {(confidenceThreshold * 100).toFixed(0)}%
+        </label>
+        <input
+          id="confidence-slider"
+          type="range"
+          min="0.01"
+          max="1"
+          step="0.01"
+          value={confidenceThreshold}
+          onChange={(e) => setConfidenceThreshold(parseFloat(e.target.value))}
+          className="confidence-slider"
+        />
+      </div>
+
       <div className="video-frame">
         <video
           ref={videoRef}
@@ -423,11 +446,19 @@ export function CameraStage() {
         <div className="hud">
           <div>
             <span className="hud-label">Live cells</span>
-            <strong>{liveCount}</strong>
+            <strong style={{ color: CLASS_CONFIG[0].color }}>{liveCount}</strong>
           </div>
           <div>
             <span className="hud-label">Dead cells</span>
-            <strong>{deadCount}</strong>
+            <strong style={{ color: CLASS_CONFIG[1].color }}>{deadCount}</strong>
+          </div>
+          <div>
+            <span className="hud-label">Total</span>
+            <strong>{totalCount}</strong>
+          </div>
+          <div>
+            <span className="hud-label">Viability</span>
+            <strong>{viability.toFixed(1)}%</strong>
           </div>
           <div>
             <span className="hud-label">Latency</span>
@@ -438,22 +469,22 @@ export function CameraStage() {
 
       <div className="stage-footer">
         <p>
-          Browser-side inference keeps the camera stream local. The model is preprocessed to a
-          {` ${MODEL_INPUT_SIZE}x${MODEL_INPUT_SIZE} `}
-          tensor, then decoded and drawn back onto the live video.
+          Browser-side inference keeps your sample images local. Live (unstained) cells are
+          outlined in green; dead (trypan blue stained) cells are outlined in red.
         </p>
-        <p>Switch to upload mode when you want to test a single photo without opening the camera.</p>
+        <p>Viability % = live cells / total cells. Switch to upload mode to analyze a single photo.</p>
         {error ? <p className="error-copy">{error}</p> : null}
       </div>
     </article>
   );
 }
 
-function drawDetections(context, video, canvas, detections) {
-  const videoWidth = video.videoWidth || 1;
-  const videoHeight = video.videoHeight || 1;
-  const scaleX = canvas.width / videoWidth;
-  const scaleY = canvas.height / videoHeight;
+function drawDetections(context, source, canvas, detections) {
+  // Use natural dimensions for images, video dimensions for webcam
+  const sourceWidth = source.videoWidth || source.naturalWidth || source.width || 1;
+  const sourceHeight = source.videoHeight || source.naturalHeight || source.height || 1;
+  const scaleX = canvas.width / sourceWidth;
+  const scaleY = canvas.height / sourceHeight;
 
   context.lineWidth = Math.max(2, Math.round(Math.min(canvas.width, canvas.height) / 320));
   context.font = '600 14px "Space Grotesk", sans-serif';
@@ -464,18 +495,15 @@ function drawDetections(context, video, canvas, detections) {
     const width = detection.width * scaleX;
     const height = detection.height * scaleY;
 
-    context.strokeStyle = detection.color;
-    context.fillStyle = detection.color;
+    // Determine class and color from our config (overrides yolo lib defaults)
+    const classId = typeof detection.classId === 'number'
+      ? detection.classId
+      : (detection.label?.toLowerCase().includes('dead') ? 1 : 0);
+
+    const config = CLASS_CONFIG[classId] || { label: detection.label || 'Cell', color: detection.color || '#94a3b8' };
+    const color = config.color;
+
+    context.strokeStyle = color;
     context.strokeRect(x, y, width, height);
-
-    const label = `${detection.label} ${(detection.score * 100).toFixed(0)}%`;
-    const labelWidth = context.measureText(label).width + 16;
-    const labelHeight = 26;
-    const labelY = Math.max(0, y - labelHeight - 4);
-
-    context.fillStyle = detection.color;
-    context.fillRect(x, labelY, labelWidth, labelHeight);
-    context.fillStyle = '#06111d';
-    context.fillText(label, x + 8, labelY + 17);
   }
 }
