@@ -2,7 +2,7 @@
   "name": "bluecells",
   "version": "0.0.0",
   "type": "module",
-  "homepage": "http://git-ashira.github.io/bluecells/",
+  "homepage": ".",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
