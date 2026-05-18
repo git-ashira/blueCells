@@ -1,9 +1,8 @@
 {
-  "name": "blueCells",
-  "private": true,
+  "name": "bluecells",
   "version": "0.0.0",
   "type": "module",
-  "homepage": ".",
+  "homepage": "http://git-ashira.github.io/bluecells/",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -14,8 +13,7 @@
   "dependencies": {
     "onnxruntime-web": "^1.20.1",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "tiff.js": "^1.0.0"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
